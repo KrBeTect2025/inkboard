@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inkboard</title>
+  <link rel="icon" href="icon.svg">
+  <link rel="stylesheet" href="fonts.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="board"></canvas>
+
+  <div id="welcome" class="welcome">
+    <p>Scribble with <kbd>W</kbd> Write and it turns into text.</p>
+    <p class="sub">Pause and it converts. <kbd>Enter</kbd> converts now, <kbd>Esc</kbd> keeps your ink.</p>
+  </div>
+
+  <div class="island menu">
+    <button data-action="export" title="Export PNG (Ctrl+Shift+E)">
+      <svg viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+    </button>
+    <button data-action="theme" title="Dark / light (Shift+Alt+D)">
+      <svg class="icon-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+    </button>
+    <button data-action="clear" title="Clear board">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+    </button>
+  </div>
+
+  <div class="island toolbar">
+    <button data-tool="hand" title="Hand (H, or hold Space)">
+      <svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+    </button>
+    <button data-tool="select" title="Select (V or 1)">
+      <svg viewBox="0 0 24 24"><path d="M4.04 4.69a.5.5 0 0 1 .65-.65l16 6.5a.5.5 0 0 1-.06.95l-6.13 1.58a2 2 0 0 0-1.43 1.43l-1.58 6.13a.5.5 0 0 1-.95.06z"/></svg>
+      <span class="key">1</span>
+    </button>
+    <button data-tool="write" title="Write: handwriting to text (W or 2)">
+      <svg viewBox="0 0 24 24"><path d="M3 18 7.5 6h1L13 18"/><path d="M4.6 14h6.8"/><path d="M14.5 17.5c1.5-3.5 2.8-3.6 3.4-1.8.5 1.6 1.2 2.6 3.1-.7"/></svg>
+      <span class="key">2</span>
+    </button>
+    <button data-tool="draw" title="Draw: keep as ink (P or 3)">
+      <svg viewBox="0 0 24 24"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/><path d="m15 5 4 4"/></svg>
+      <span class="key">3</span>
+    </button>
+    <button data-tool="eraser" title="Eraser (E or 4)">
+      <svg viewBox="0 0 24 24"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+      <span class="key">4</span>
+    </button>
+    <span class="divider"></span>
+    <div class="swatches">
+      <button class="swatch" data-color="#1e1e1e" title="Black" style="--c:#1e1e1e"></button>
+      <button class="swatch" data-color="#e03131" title="Red" style="--c:#e03131"></button>
+      <button class="swatch" data-color="#2f9e44" title="Green" style="--c:#2f9e44"></button>
+      <button class="swatch" data-color="#1971c2" title="Blue" style="--c:#1971c2"></button>
+      <button class="swatch" data-color="#f08c00" title="Orange" style="--c:#f08c00"></button>
+    </div>
+  </div>
+
+  <div class="bottom-left">
+  <div class="island">
+    <button data-action="zoom-out" title="Zoom out (Ctrl+-)">
+      <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+    </button>
+    <button data-action="zoom-reset" class="zoom-label" title="Reset zoom (Ctrl+0)">100%</button>
+    <button data-action="zoom-in" title="Zoom in (Ctrl+=)">
+      <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>
+    </button>
+  </div>
+  <div class="island">
+    <button data-action="undo" title="Undo (Ctrl+Z)">
+      <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+    </button>
+    <button data-action="redo" title="Redo (Ctrl+Shift+Z)">
+      <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+    </button>
+  </div>
+  </div>
+
+  <div id="status" class="status" hidden>Recognizing...</div>
+  <div id="candidates" class="candidates island" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <textarea id="editor" class="editor" spellcheck="false" hidden></textarea>
+
+  <script src="app.js"></script>
+</body>
+</html>

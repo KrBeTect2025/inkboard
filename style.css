@@ -1,0 +1,203 @@
+:root {
+  --bg: #ffffff;
+  --island: #ffffff;
+  --island-shadow: 0 0 0 1px rgba(0, 0, 0, 0.05), 0 1px 4px rgba(0, 0, 0, 0.1);
+  --text: #1b1b1f;
+  --muted: #8c8c94;
+  --hover: #f1f0ff;
+  --active-bg: #e0dfff;
+  --active-fg: #4a47b1;
+  --primary: #6965db;
+  --divider: #e7e7ec;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #121212;
+  --island: #232329;
+  --island-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 4px rgba(0, 0, 0, 0.5);
+  --text: #e3e3e8;
+  --muted: #7a7a85;
+  --hover: #2e2d39;
+  --active-bg: #403e6a;
+  --active-fg: #c9c7ff;
+  --primary: #a8a5ff;
+  --divider: #34343c;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  user-select: none;
+}
+
+#board {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+  display: block;
+}
+
+/* Same trick Excalidraw uses: the board is always drawn light, dark mode inverts it. */
+:root[data-theme="dark"] #board { filter: invert(93%) hue-rotate(180deg); }
+
+.island {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--island);
+  border-radius: 10px;
+  box-shadow: var(--island-shadow);
+  z-index: 10;
+}
+
+.island button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.island button:hover { background: var(--hover); }
+.island button.active { background: var(--active-bg); color: var(--active-fg); }
+.island button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+.island svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.island .key {
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.toolbar { top: 16px; left: 50%; transform: translateX(-50%); }
+.menu { top: 16px; left: 16px; }
+.bottom-left { position: fixed; bottom: 16px; left: 16px; display: flex; gap: 8px; z-index: 10; }
+.bottom-left .island { position: static; }
+.zoom-label { min-width: 56px !important; font-variant-numeric: tabular-nums; font-size: 13px; }
+
+.icon-sun { display: none; }
+:root[data-theme="dark"] .icon-sun { display: block; }
+:root[data-theme="dark"] .icon-moon { display: none; }
+
+.divider { width: 1px; height: 24px; margin: 0 6px; background: var(--divider); }
+
+.swatches { display: flex; gap: 4px; padding-right: 4px; }
+.island button.swatch {
+  min-width: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: var(--c);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.island button.swatch:hover,
+.island button.swatch.active { background: var(--c); }
+.island button.swatch:hover { transform: scale(1.08); }
+.island button.swatch.active { box-shadow: 0 0 0 2px var(--island), 0 0 0 4px var(--primary); }
+:root[data-theme="dark"] .island button.swatch[data-color="#1e1e1e"] { background: #ced4da; }
+
+.welcome {
+  position: fixed;
+  left: 50%;
+  top: 46%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  font-family: "Excalifont", cursive;
+  font-size: 26px;
+  color: var(--muted);
+  pointer-events: none;
+  width: min(90vw, 640px);
+}
+.welcome p { margin: 0 0 12px; }
+.welcome .sub { font-size: 18px; }
+.welcome kbd {
+  font-family: inherit;
+  padding: 0 6px;
+  border: 1.5px solid var(--divider);
+  border-radius: 6px;
+}
+
+.status {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--island);
+  box-shadow: var(--island-shadow);
+  color: var(--muted);
+  z-index: 10;
+}
+
+.candidates { flex-wrap: wrap; max-width: min(92vw, 560px); }
+.candidates button { font-family: "Excalifont", cursive; font-size: 17px; }
+.candidates button.keep { font-family: inherit; font-size: 12px; color: var(--muted); gap: 4px; display: flex; }
+.candidates button.keep svg { width: 14px; height: 14px; }
+
+.toast {
+  position: fixed;
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #1b1b1f;
+  color: #fff;
+  z-index: 20;
+  max-width: 90vw;
+}
+:root[data-theme="dark"] .toast { background: #e3e3e8; color: #1b1b1f; }
+
+.editor {
+  position: fixed;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Excalifont", cursive;
+  line-height: 1.25;
+  white-space: pre;
+  z-index: 5;
+  transform-origin: 0 0;
+}
+:root[data-theme="dark"] .editor { filter: invert(93%) hue-rotate(180deg); }
+
+@media (max-width: 640px) {
+  .toolbar { top: auto; bottom: 68px; }
+  .island .key { display: none; }
+}
