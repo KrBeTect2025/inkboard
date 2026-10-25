@@ -9,8 +9,9 @@ offers other readings if it guessed wrong.
 
 - Handwriting to text with a suggestion bar, or keep the ink as drawn
 - Σ becomes a hand-drawn ∑, for sums in maths and physics
-- Infinite board: pan, zoom, freehand drawing, eraser, 5 colors
+- Infinite board: pan, zoom, freehand drawing, hand-drawn arrows, eraser, 5 colors, 3 stroke widths
 - Select, move and resize; draw a loop around things to select them all
+- Paste text and it becomes Excalifont text; paste a picture and it goes on the board as-is
 - Undo/redo, PNG export, dark mode, saves itself in the browser
 
 It's plain HTML, CSS and JavaScript: no build step, no dependencies.
@@ -23,7 +24,8 @@ Open `index.html` in Chrome or Chromium. For an app window of its own:
 google-chrome-stable --app="file://$PWD/index.html"
 ```
 
-The board is saved in the browser's localStorage, which is per Chrome profile.
+The board is saved in the browser's localStorage, and pasted pictures in its IndexedDB
+(they're too big for localStorage); both are per Chrome profile.
 Opening it with a fixed `--profile-directory=Default` (or whichever profile you
 like) keeps it on the same board every time.
 
@@ -31,10 +33,11 @@ like) keeps it on the same board every time.
 
 | Key | Tool |
 | --- | --- |
-| `W` / `2` | Write: scribble, pause, and it becomes text |
+| `W` / `2` | Write: scribble, pause, and it becomes text. Double-click to edit or add text, as in Select |
 | `P` / `3` | Draw: freehand ink that stays ink |
-| `V` / `1` | Select: drag, resize from the corner handles, `Delete`, double-click to edit or add text, `Ctrl+C` copies the words. Draw a loop around things on empty board to select them all; `Shift`+click or `Shift`+loop adds to the selection; `Ctrl+A` selects everything |
+| `V` / `1` | Select: drag, resize from the corner handles, `Delete`, double-click to edit or add text. Draw a loop around things on empty board to select them all; `Shift`+click or `Shift`+loop adds to the selection; `Ctrl+A` selects everything |
 | `E` / `4` | Eraser |
+| `A` / `5` | Arrow: drag from the tail to the tip; hold `Shift` to keep it to 15° steps |
 | `H` or hold `Space` | Pan (the mouse wheel also pans, `Ctrl+wheel` zooms) |
 
 - While writing, `Enter` converts right away and `Esc` keeps your handwriting.
@@ -44,6 +47,18 @@ like) keeps it on the same board every time.
   If it was really an E or a 2, those readings are in the suggestion bar. And whenever a
   reading has an "E" in it, the bar offers the same reading with ∑ in place of the E,
   right after the best guess.
+- The three line buttons after the colors set the stroke width (thin, medium, thick) for the pencil
+  and arrows; with ink or arrows selected they change those too. An arrowhead grows with its line.
+  Arrows are drawn a little sloppy, like Excalidraw's, and each keeps its own wobble when moved or copied.
+- Arrows: select one and drag either end to move just that end (`Shift` snaps the angle again).
+  Moving, resizing, colors, copy/paste and the eraser treat arrows like everything else.
+- `Ctrl+V` pastes at the mouse. Text from anywhere becomes Excalifont text in the current
+  color; a picture (a screenshot, "Copy image" in a browser) goes on the board unchanged, at its
+  real size unless it wouldn't fit on screen. Either way it comes in selected, ready to move or resize.
+  (Dark mode inverts the board, and pictures are inverted back, so they look a little muted there,
+  as in Excalidraw.)
+- `Ctrl+C` / `Ctrl+X` copy or cut the selection. Pasting it back on the board brings back the
+  same ink, text and pictures; pasting it in another app gives the words of its texts.
 - `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo (undoing a conversion brings your ink back).
 - `Ctrl+Shift+E` exports a PNG, and `Shift+Alt+D` toggles dark mode.
 
@@ -68,7 +83,7 @@ Change `LANG` at the top of `app.js` to recognize another language (`hi`, `de`, 
 | File | What it is |
 | --- | --- |
 | `index.html` | The page: canvas, toolbars, suggestion bar |
-| `app.js` | Everything else: board, tools, recognition, Σ, undo, storage |
+| `app.js` | Everything else: board, tools, arrows, recognition, Σ, copy/paste, undo, storage |
 | `style.css` | Excalidraw-like toolbars, light and dark |
 | `fonts.css` | Excalifont, embedded so the page works from `file://` |
 | `icon.svg` | App icon (also the favicon) |

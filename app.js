@@ -8,13 +8,21 @@ const RECOGNIZER = 'https://inputtools.google.com/request?ime=handwriting&app=in
 
 const FONT = 'Excalifont';
 const LINE_HEIGHT = 1.25;
-const INK_WIDTH = { write: 2.5, draw: 3 };
+// Write ink is only there until it turns into text; Draw ink and arrows take the toolbar's width.
+const WRITE_WIDTH = 2.5;
+// Each side of an arrowhead leans this far off the shaft.
+const ARROW_HEAD_ANGLE = Math.PI / 7;
 const ERASER_RADIUS = 10;
 const HANDLE_SIZE = 8;
-const RESIZE_CURSORS = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize' };
+const RESIZE_CURSORS = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', start: 'move', end: 'move' };
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 30;
 const STORAGE_KEY = 'inkboard:v1';
+// Pasted pictures live in IndexedDB, which has room for them, keyed by fileId.
+const FILES_DB = 'inkboard';
+const CLIPBOARD_TYPE = 'application/x-inkboard';
+// The board is inverted in dark mode; pictures are drawn pre-inverted so they look as pasted.
+const IMAGE_INVERT_FILTER = 'invert(100%) hue-rotate(180deg)';
 
 const $ = (s) => document.querySelector(s);
 const canvas = $('#board');
@@ -26,6 +34,7 @@ const candidatesBox = $('#candidates');
 const state = {
   tool: 'write',
   color: '#1e1e1e',
+  width: 4,
   view: { x: 0, y: 0, zoom: 1 }, // screen = world * zoom + (x, y)
   elements: [],
   selectedIds: [],
@@ -44,7 +53,9 @@ let hover = null;         // last pointer position on screen, for the eraser rin
 let spaceDown = false;
 let editing = null;       // { id, snap }
 let candidateFor = null;  // { textId, strokes, cands }
+let taps = [];            // { id, snap, at } of Write strokes that were just a click
 let fontRatios = null;
+const files = new Map();  // fileId -> { src, img }, kept out of the undo history
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -60,6 +71,8 @@ const toScreen = (wx, wy) => ({
   x: wx * state.view.zoom + state.view.x,
   y: wy * state.view.zoom + state.view.y,
 });
+// Ink and arrows are point lists; texts and pictures are boxes.
+const hasPts = (el) => el.type === 'ink' || el.type === 'arrow';
 
 /* ---------- geometry ---------- */
 
@@ -100,7 +113,26 @@ function inkBounds(el, padded = true) {
   return { x: x0 - p, y: y0 - p, w: x1 - x0 + 2 * p, h: y1 - y0 + 2 * p };
 }
 
-const bounds = (el, padded = true) => (el.type === 'text' ? textBounds(el) : inkBounds(el, padded));
+// The two ends of an arrowhead's sides; they meet the shaft at its tip, pts[1].
+function arrowHead(el) {
+  const [[x0, y0], [x1, y1]] = el.pts;
+  const h = Math.min(Math.hypot(x1 - x0, y1 - y0) * 0.4, 8 + el.width * 3.5);
+  const a = Math.atan2(y1 - y0, x1 - x0);
+  return [-1, 1].map((s) => [x1 - h * Math.cos(a + s * ARROW_HEAD_ANGLE), y1 - h * Math.sin(a + s * ARROW_HEAD_ANGLE)]);
+}
+
+function arrowSegments(el) {
+  const [start, tip] = el.pts;
+  return [[start, tip], ...arrowHead(el).map((p) => [p, tip])];
+}
+
+function bounds(el, padded = true) {
+  if (el.type === 'text') return textBounds(el);
+  if (el.type === 'image') return { x: el.x, y: el.y, w: el.w, h: el.h };
+  // Padded for the sloppy lines too (see sketchLine)
+  if (el.type === 'arrow') return inkBounds({ pts: [...el.pts, ...arrowHead(el)], width: el.width * 2 + 16 }, padded);
+  return inkBounds(el, padded);
+}
 
 function unionBounds(list, padded = true) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -124,8 +156,12 @@ function distToSegment(px, py, ax, ay, bx, by) {
 }
 
 function hits(el, x, y, r) {
-  if (el.type === 'text') {
-    const b = textBounds(el);
+  if (el.type === 'arrow') {
+    r += el.width / 2;
+    return arrowSegments(el).some(([a, b]) => distToSegment(x, y, a[0], a[1], b[0], b[1]) <= r);
+  }
+  if (el.type !== 'ink') {
+    const b = bounds(el);
     return x >= b.x - r && x <= b.x + b.w + r && y >= b.y - r && y <= b.y + b.h + r;
   }
   r += el.width / 2;
@@ -160,11 +196,19 @@ const corners = (b) => ({
   se: [b.x + b.w, b.y + b.h],
 });
 
+const loneArrow = (sel) => (sel.length === 1 && sel[0].type === 'arrow' ? sel[0] : null);
+
+// A lone arrow is changed by dragging its ends; anything else by the corners of its box.
+function handles(sel) {
+  const arrow = loneArrow(sel);
+  return arrow ? { start: arrow.pts[0], end: arrow.pts[1] } : corners(selectionBox(sel));
+}
+
 // Which resize handle of the selection is under the pointer, if any.
 function handleAt(sx, sy) {
   const sel = selection();
   if (!sel.length || state.tool !== 'select' || editing) return null;
-  for (const [name, [x, y]] of Object.entries(corners(selectionBox(sel)))) {
+  for (const [name, [x, y]] of Object.entries(handles(sel))) {
     const p = toScreen(x, y);
     if (Math.abs(sx - p.x) <= HANDLE_SIZE && Math.abs(sy - p.y) <= HANDLE_SIZE) return name;
   }
@@ -185,12 +229,17 @@ function resizeSelection(p, w) {
   for (const orig of origs) {
     const el = byId(orig.id);
     if (!el) continue;
+    if (hasPts(el)) {
+      el.pts = orig.pts.map(([x, y, ...rest]) => [round2(ax + (x - ax) * s), round2(ay + (y - ay) * s), ...rest]);
+      continue;
+    }
+    el.x = ax + (orig.x - ax) * s;
+    el.y = ay + (orig.y - ay) * s;
     if (el.type === 'text') {
       el.size = orig.size * s;
-      el.x = ax + (orig.x - ax) * s;
-      el.y = ay + (orig.y - ay) * s;
     } else {
-      el.pts = orig.pts.map(([x, y, t]) => [round2(ax + (x - ax) * s), round2(ay + (y - ay) * s), t]);
+      el.w = orig.w * s;
+      el.h = orig.h * s;
     }
   }
 }
@@ -211,11 +260,13 @@ function lassoPick(poly) {
   if (poly.length < 3) return [];
   return state.elements.filter((el) => {
     let samples;
-    if (el.type === 'text') {
-      const b = textBounds(el);
-      samples = [0, 0.5, 1].flatMap((fx) => [0, 0.5, 1].map((fy) => [b.x + b.w * fx, b.y + b.h * fy]));
-    } else {
+    if (el.type === 'ink') {
       samples = el.pts;
+    } else if (el.type === 'arrow') {
+      samples = resample(el.pts, 9);
+    } else {
+      const b = bounds(el);
+      samples = [0, 0.5, 1].flatMap((fx) => [0, 0.5, 1].map((fy) => [b.x + b.w * fx, b.y + b.h * fy]));
     }
     const inside = samples.filter(([x, y]) => insidePolygon(x, y, poly)).length;
     return inside >= samples.length * 0.6;
@@ -223,14 +274,14 @@ function lassoPick(poly) {
 }
 
 function moveElement(el, dx, dy) {
-  if (el.type === 'text') {
-    el.x += dx;
-    el.y += dy;
-  } else {
+  if (hasPts(el)) {
     for (const p of el.pts) {
       p[0] = round2(p[0] + dx);
       p[1] = round2(p[1] + dy);
     }
+  } else {
+    el.x += dx;
+    el.y += dy;
   }
 }
 
@@ -266,6 +317,47 @@ function drawInk(c, el) {
   c.stroke();
 }
 
+// Seeded randomness, so an arrow looks the same sloppy way every time it's drawn.
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296 - 0.5;
+  };
+}
+
+const seedOf = (el) => el.seed ?? [...el.id].reduce((h, ch) => Math.imul(h ^ ch.charCodeAt(0), 16777619), 2166136261);
+
+// A line drawn twice, each time a little off at the ends and bowed in the
+// middle, the way rough.js draws Excalidraw's.
+function sketchLine(c, rand, [ax, ay], [bx, by], width) {
+  const len = Math.hypot(bx - ax, by - ay) || 1;
+  const nx = -(by - ay) / len;
+  const ny = (bx - ax) / len;
+  const jitter = 1 + width * 0.35;
+  const bow = Math.min(len * 0.04, 9) * rand() * 2;
+  for (let pass = 0; pass < 2; pass++) {
+    const j = jitter * (pass ? 1.4 : 0.6);
+    const bend = bow + Math.min(len * 0.015, 3.5) * rand() * 2;
+    const t = 0.5 + rand() * 0.2;
+    c.moveTo(ax + rand() * j, ay + rand() * j);
+    c.quadraticCurveTo(ax + (bx - ax) * t + nx * bend, ay + (by - ay) * t + ny * bend, bx + rand() * j, by + rand() * j);
+  }
+}
+
+function drawArrow(c, el) {
+  const rand = rng(seedOf(el));
+  c.strokeStyle = el.color;
+  c.lineWidth = el.width;
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  c.beginPath();
+  for (const [a, b] of arrowSegments(el)) sketchLine(c, rand, a, b, el.width);
+  c.stroke();
+}
+
 function drawText(c, el) {
   c.font = fontStr(el.size);
   c.fillStyle = el.color;
@@ -276,8 +368,25 @@ function drawText(c, el) {
   });
 }
 
+function drawImage(c, el) {
+  const file = files.get(el.fileId);
+  if (!file || !file.img.complete || !file.img.naturalWidth) {
+    // Still loading, or its file is gone
+    c.fillStyle = '#e9ecef';
+    c.fillRect(el.x, el.y, el.w, el.h);
+    return;
+  }
+  c.save();
+  if (document.documentElement.dataset.theme === 'dark') c.filter = IMAGE_INVERT_FILTER;
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(file.img, el.x, el.y, el.w, el.h);
+  c.restore();
+}
+
 function drawElement(c, el) {
   if (el.type === 'ink') drawInk(c, el);
+  else if (el.type === 'arrow') drawArrow(c, el);
+  else if (el.type === 'image') drawImage(c, el);
   else if (!editing || editing.id !== el.id) drawText(c, el);
 }
 
@@ -295,29 +404,36 @@ function draw() {
     if (intersects(bounds(el), visible)) drawElement(ctx, el);
   }
   if (pointer && pointer.stroke) drawInk(ctx, pointer.stroke);
+  if (pointer && pointer.arrow) drawArrow(ctx, pointer.arrow);
 
   const sel = selection().filter((el) => !(editing && editing.id === el.id));
   if (sel.length) {
-    const b = selectionBox(sel);
+    const arrow = loneArrow(sel);
     ctx.strokeStyle = '#6965db';
     ctx.lineWidth = 1 / zoom;
-    ctx.setLineDash([4 / zoom, 3 / zoom]);
-    if (sel.length > 1) {
-      ctx.globalAlpha = 0.45;
-      for (const el of sel) {
-        const eb = selectionBox([el]);
-        ctx.strokeRect(eb.x, eb.y, eb.w, eb.h);
+    if (!arrow) {
+      const b = selectionBox(sel);
+      ctx.setLineDash([4 / zoom, 3 / zoom]);
+      if (sel.length > 1) {
+        ctx.globalAlpha = 0.45;
+        for (const el of sel) {
+          const eb = selectionBox([el]);
+          ctx.strokeRect(eb.x, eb.y, eb.w, eb.h);
+        }
+        ctx.globalAlpha = 1;
       }
-      ctx.globalAlpha = 1;
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+      ctx.setLineDash([]);
     }
-    ctx.strokeRect(b.x, b.y, b.w, b.h);
-    ctx.setLineDash([]);
     if (state.tool === 'select') {
       const hs = HANDLE_SIZE / zoom;
       ctx.fillStyle = '#ffffff';
-      for (const [x, y] of Object.values(corners(b))) {
-        ctx.fillRect(x - hs / 2, y - hs / 2, hs, hs);
-        ctx.strokeRect(x - hs / 2, y - hs / 2, hs, hs);
+      for (const [x, y] of Object.values(handles(sel))) {
+        ctx.beginPath();
+        if (arrow) ctx.arc(x, y, hs / 2 + 1 / zoom, 0, Math.PI * 2);
+        else ctx.rect(x - hs / 2, y - hs / 2, hs, hs);
+        ctx.fill();
+        ctx.stroke();
       }
     }
   }
@@ -346,8 +462,10 @@ function draw() {
     ctx.stroke();
   }
 
-  $('#welcome').hidden = state.elements.length > 0 || !!(pointer && pointer.stroke);
+  $('#welcome').hidden = state.elements.length > 0 || !!(pointer && (pointer.stroke || pointer.arrow));
   $('.zoom-label').textContent = `${Math.round(zoom * 100)}%`;
+  const widthMatters = state.tool === 'draw' || state.tool === 'arrow' || selection().some(hasPts);
+  $('.widths').classList.toggle('idle', !widthMatters);
   positionCandidates();
   if (editing) layoutEditor();
 }
@@ -405,6 +523,7 @@ function writeStorage() {
       view: state.view,
       tool: state.tool,
       color: state.color,
+      width: state.width,
       theme: document.documentElement.dataset.theme,
     }));
   } catch {
@@ -432,9 +551,59 @@ function load() {
     if (data.view) state.view = data.view;
     if (data.tool) state.tool = data.tool;
     if (data.color) state.color = data.color;
+    if (data.width) state.width = data.width;
   }
   const dark = data && data.theme ? data.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+
+function addFile(id, src) {
+  if (!files.has(id)) {
+    const img = new Image();
+    img.onload = render;
+    img.src = src;
+    files.set(id, { src, img });
+  }
+  return files.get(id);
+}
+
+let filesDb = null;
+function openFiles(mode) {
+  if (!filesDb) {
+    filesDb = new Promise((resolve, reject) => {
+      const req = indexedDB.open(FILES_DB, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('files');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return filesDb.then((db) => db.transaction('files', mode).objectStore('files'));
+}
+
+const done = (req) => new Promise((resolve, reject) => {
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+});
+
+async function storeFile(id, src) {
+  try {
+    await done((await openFiles('readwrite')).put(src, id));
+  } catch {
+    toast('Could not save the picture in this browser. Export the board before closing.');
+  }
+}
+
+// Loads the pictures the board uses and drops the ones nothing points at any more.
+async function loadFiles() {
+  try {
+    const store = await openFiles('readwrite');
+    const [ids, srcs] = await Promise.all([done(store.getAllKeys()), done(store.getAll())]);
+    const used = new Set(state.elements.filter((el) => el.type === 'image').map((el) => el.fileId));
+    ids.forEach((id, i) => (used.has(id) ? addFile(id, srcs[i]) : store.delete(id)));
+  } catch {
+    toast("Couldn't load the pictures on this board.");
+  }
+  render();
 }
 
 /* ---------- handwriting recognition ---------- */
@@ -775,6 +944,7 @@ function commitEdit() {
   editing = null;
   editor.hidden = true;
   editor.blur();
+  if (state.tool !== 'select') state.selectedIds = [];
   const el = byId(id);
   if (el) {
     el.text = editor.value.replace(/\s+$/, '');
@@ -802,6 +972,15 @@ editor.addEventListener('keydown', (e) => {
 editor.addEventListener('blur', commitEdit);
 
 /* ---------- pointer input ---------- */
+
+// With Shift held, an arrow keeps to steps of 15 degrees.
+function arrowEnd(from, w, shift) {
+  if (!shift) return [round2(w.x), round2(w.y)];
+  const step = Math.PI / 12;
+  const a = Math.round(Math.atan2(w.y - from[1], w.x - from[0]) / step) * step;
+  const len = Math.hypot(w.x - from[0], w.y - from[1]);
+  return [round2(from[0] + Math.cos(a) * len), round2(from[1] + Math.sin(a) * len)];
+}
 
 function eraseAt(sx, sy) {
   const w = toWorld(sx, sy);
@@ -841,9 +1020,22 @@ canvas.addEventListener('pointerdown', (e) => {
           id: uid(),
           type: 'ink',
           color: state.color,
-          width: INK_WIDTH[state.tool],
+          width: state.tool === 'write' ? WRITE_WIDTH : state.width,
           t0: Date.now(),
           pts: [[round2(w.x), round2(w.y), 0]],
+        },
+      };
+      break;
+    case 'arrow':
+      pointer = {
+        kind: 'arrow',
+        arrow: {
+          id: uid(),
+          type: 'arrow',
+          color: state.color,
+          width: state.width,
+          seed: Math.floor(Math.random() * 2 ** 31),
+          pts: [[round2(w.x), round2(w.y)], [round2(w.x), round2(w.y)]],
         },
       };
       break;
@@ -854,6 +1046,10 @@ canvas.addEventListener('pointerdown', (e) => {
     case 'select': {
       const corner = handleAt(e.clientX, e.clientY);
       const sel = selection();
+      if (corner === 'start' || corner === 'end') {
+        pointer = { kind: 'arrow-end', id: sel[0].id, end: corner === 'start' ? 0 : 1, snap: snapshot(), moved: false };
+        break;
+      }
       if (corner && sel.length) {
         pointer = {
           kind: 'resize',
@@ -911,6 +1107,18 @@ canvas.addEventListener('pointermove', (e) => {
       }
       break;
     }
+    case 'arrow': {
+      const { pts } = pointer.arrow;
+      pts[1] = arrowEnd(pts[0], toWorld(e.clientX, e.clientY), e.shiftKey);
+      break;
+    }
+    case 'arrow-end': {
+      const el = byId(pointer.id);
+      if (!el) break;
+      el.pts[pointer.end] = arrowEnd(el.pts[1 - pointer.end], toWorld(e.clientX, e.clientY), e.shiftKey);
+      pointer.moved = true;
+      break;
+    }
     case 'erase':
       eraseAt(e.clientX, e.clientY);
       break;
@@ -946,11 +1154,21 @@ function endPointer() {
     if (p.write) {
       pendingIds.push(p.stroke.id);
       scheduleConvert();
+      const b = inkBounds(p.stroke, false);
+      if (Math.max(b.w, b.h) * state.view.zoom < 4) taps.push({ id: p.stroke.id, snap, at: Date.now() });
+    }
+  } else if (p.kind === 'arrow') {
+    // A click without a drag leaves no arrow
+    const [[x0, y0], [x1, y1]] = p.arrow.pts;
+    if (Math.hypot(x1 - x0, y1 - y0) * state.view.zoom >= 4) {
+      const snap = snapshot();
+      state.elements.push(p.arrow);
+      commit(snap);
     }
   } else if (p.kind === 'erase') {
     pendingIds = pendingIds.filter((id) => byId(id));
     if (p.erased) commit(p.snap);
-  } else if (p.kind === 'move' || p.kind === 'resize') {
+  } else if (p.kind === 'move' || p.kind === 'resize' || p.kind === 'arrow-end') {
     if (p.moved) commit(p.snap);
   } else if (p.kind === 'lasso') {
     const picked = lassoPick(p.pts);
@@ -969,8 +1187,27 @@ canvas.addEventListener('pointerleave', () => {
   render();
 });
 
+// A double-click in Write mode leaves two dots before the browser calls it a
+// double-click; they go again, undo history and all.
+function dropTaps() {
+  const recent = taps.filter((t) => Date.now() - t.at < 1000 && byId(t.id));
+  taps = [];
+  if (!recent.length) return;
+  const ids = recent.map((t) => t.id);
+  for (const t of [...recent].reverse()) {
+    if (undoStack[undoStack.length - 1] === t.snap) undoStack.pop();
+  }
+  state.elements = state.elements.filter((el) => !ids.includes(el.id));
+  pendingIds = pendingIds.filter((id) => !ids.includes(id));
+  if (pendingIds.length) convertPending();
+  else clearTimeout(convertTimer);
+  save();
+}
+
+// Double-click edits a text, or starts a new one on empty board, in Select and Write mode alike.
 canvas.addEventListener('dblclick', (e) => {
-  if (state.tool !== 'select') return;
+  if (state.tool === 'write') dropTaps();
+  else if (state.tool !== 'select') return;
   const w = toWorld(e.clientX, e.clientY);
   const hit = hitTest(w.x, w.y);
   if (hit && hit.type === 'text') {
@@ -1047,6 +1284,20 @@ function setColor(color) {
   render();
 }
 
+// Sets the width for Draw and arrows, and of the selected ink and arrows.
+function setWidth(width) {
+  state.width = width;
+  document.querySelectorAll('[data-width]').forEach((b) => b.classList.toggle('active', Number(b.dataset.width) === width));
+  const rewidth = selection().filter((el) => hasPts(el) && el.width !== width);
+  if (rewidth.length) {
+    const snap = snapshot();
+    for (const el of rewidth) el.width = width;
+    commit(snap);
+  }
+  save();
+  render();
+}
+
 function deleteSelected() {
   if (!selection().length) return;
   const snap = snapshot();
@@ -1072,6 +1323,7 @@ function toggleTheme() {
   const root = document.documentElement;
   root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
   save();
+  render();
 }
 
 function exportPng() {
@@ -1128,11 +1380,14 @@ const actions = {
 
 document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
 document.querySelectorAll('[data-color]').forEach((b) => b.addEventListener('click', () => setColor(b.dataset.color)));
+document.querySelectorAll('[data-width]').forEach((b) => b.addEventListener('click', () => setWidth(Number(b.dataset.width))));
 document.querySelectorAll('[data-action]').forEach((b) => b.addEventListener('click', () => actions[b.dataset.action]()));
 // Keep keyboard focus on the board so shortcuts keep working after a click.
 document.querySelectorAll('.island').forEach((el) => el.addEventListener('mousedown', (e) => e.preventDefault()));
 
-const toolKeys = { h: 'hand', v: 'select', 1: 'select', w: 'write', 2: 'write', p: 'draw', 3: 'draw', e: 'eraser', 4: 'eraser' };
+const toolKeys = {
+  h: 'hand', v: 'select', 1: 'select', w: 'write', 2: 'write', p: 'draw', 3: 'draw', e: 'eraser', 4: 'eraser', a: 'arrow', 5: 'arrow',
+};
 
 window.addEventListener('keydown', (e) => {
   if (editing) return;
@@ -1196,14 +1451,106 @@ window.addEventListener('keyup', (e) => {
   }
 });
 
-// Ctrl+C copies the words of the selected texts (top to bottom, then left to
-// right), so recognized text can be pasted elsewhere.
-document.addEventListener('copy', (e) => {
-  const texts = selection().filter((el) => el.type === 'text').sort((a, b) => a.y - b.y || a.x - b.x);
-  if (editing || !texts.length) return;
+/* ---------- copy and paste ---------- */
+
+// Ctrl+C puts the selection on the clipboard twice: whole, for pasting back on
+// a board, and as the words of its texts (top to bottom, then left to right)
+// for pasting elsewhere.
+function copySelection(e) {
+  const sel = state.elements.filter((el) => isSelected(el.id));
+  if (editing || !sel.length) return false;
   e.preventDefault();
-  e.clipboardData.setData('text/plain', texts.map((el) => el.text).join('\n'));
-  toast(texts.length > 1 ? `Copied ${texts.length} texts.` : 'Copied the text.');
+  const texts = sel.filter((el) => el.type === 'text').sort((a, b) => a.y - b.y || a.x - b.x);
+  if (texts.length) e.clipboardData.setData('text/plain', texts.map((el) => el.text).join('\n'));
+  const srcs = {};
+  for (const el of sel) {
+    if (el.type === 'image' && files.has(el.fileId)) srcs[el.fileId] = files.get(el.fileId).src;
+  }
+  e.clipboardData.setData(CLIPBOARD_TYPE, JSON.stringify({ elements: sel, files: srcs }));
+  return true;
+}
+
+document.addEventListener('copy', (e) => {
+  const n = selection().length;
+  if (copySelection(e)) toast(n > 1 ? `Copied ${n} items.` : 'Copied.');
+});
+
+document.addEventListener('cut', (e) => {
+  if (copySelection(e)) deleteSelected();
+});
+
+// Puts pasted elements on the board centred on the mouse (or the middle of the
+// screen) and selects them, ready to move or resize.
+function addPasted(list) {
+  const snap = snapshot();
+  const b = unionBounds(list, false);
+  const at = hover ? toWorld(hover.x, hover.y) : toWorld(W / 2, H / 2);
+  for (const el of list) moveElement(el, at.x - (b.x + b.w / 2), at.y - (b.y + b.h / 2));
+  hideCandidates();
+  state.elements.push(...list);
+  commit(snap);
+  setTool('select');
+  state.selectedIds = list.map((el) => el.id);
+  render();
+}
+
+function pasteText(text) {
+  const clean = text.replace(/\r\n?/g, '\n').replace(/\t/g, '    ').replace(/^\s*\n/, '').replace(/\s+$/, '');
+  if (!clean) return;
+  addPasted([{ id: uid(), type: 'text', text: clean, color: state.color, size: 28 / state.view.zoom, x: 0, y: 0 }]);
+}
+
+// A picture goes on the board byte for byte, at its real pixel size unless
+// that wouldn't fit on screen.
+async function pasteImage(blob) {
+  const src = await new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(blob);
+  });
+  const fileId = uid();
+  const { img } = addFile(fileId, src || '');
+  try {
+    await img.decode();
+  } catch {
+    files.delete(fileId);
+    return toast("That picture couldn't be opened.");
+  }
+  storeFile(fileId, src);
+  const w = img.naturalWidth / dpr;
+  const h = img.naturalHeight / dpr;
+  const s = Math.min(1, (W * 0.8) / w, (H * 0.8) / h) / state.view.zoom;
+  addPasted([{ id: uid(), type: 'image', fileId, x: 0, y: 0, w: w * s, h: h * s }]);
+}
+
+function pasteElements(json) {
+  let data;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return;
+  }
+  if (!data || !Array.isArray(data.elements) || !data.elements.length) return;
+  for (const [id, src] of Object.entries(data.files || {})) {
+    if (!files.has(id)) storeFile(id, src);
+    addFile(id, src);
+  }
+  addPasted(data.elements.map((el) => ({ ...el, id: uid() })));
+}
+
+document.addEventListener('paste', (e) => {
+  if (editing) return;
+  const data = e.clipboardData;
+  const own = data.getData(CLIPBOARD_TYPE);
+  const text = data.getData('text/plain');
+  const image = [...data.files].find((f) => f.type.startsWith('image/'));
+  // Office apps put a picture of the copied text next to the text itself; the text is what's wanted then.
+  const textWithPicture = text.trim() && !/<img\b/i.test(data.getData('text/html'));
+  e.preventDefault();
+  if (own) pasteElements(own);
+  else if (image && !textWithPicture) pasteImage(image);
+  else pasteText(text);
 });
 
 window.addEventListener('resize', resize);
@@ -1215,7 +1562,9 @@ window.addEventListener('beforeunload', () => {
 load();
 setTool(state.tool);
 setColor(state.color);
+setWidth(state.width);
 resize();
+loadFiles();
 document.fonts.load(fontStr(20), 'Aa').then(() => {
   fontRatios = null;
   render();

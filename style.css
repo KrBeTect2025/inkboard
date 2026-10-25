@@ -112,6 +112,11 @@ html, body {
 
 .divider { width: 1px; height: 24px; margin: 0 6px; background: var(--divider); }
 
+.widths { display: flex; gap: 2px; transition: opacity 0.15s; }
+.widths button { min-width: 32px !important; padding: 0 6px !important; }
+/* Write, eraser and the rest don't use the width; it stays clickable for the next pencil stroke */
+.widths.idle { opacity: 0.4; }
+
 .swatches { display: flex; gap: 4px; padding-right: 4px; }
 .island button.swatch {
   min-width: 0;
